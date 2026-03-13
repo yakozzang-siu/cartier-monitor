@@ -1,7 +1,5 @@
 """
 카르티에 재고 모니터 (GitHub Actions용) v5
-- playwright-stealth 으로 Cloudflare 우회
-- 실제 보이고 활성화된 버튼만 감지
 """
 
 import os
@@ -67,7 +65,7 @@ def main():
         page = context.new_page()
 
         # ★ stealth 적용 (Cloudflare 우회 핵심)
-        Stealth().apply_stealth_sync(page)
+        stealth(page)
 
         print("페이지 로딩 중...")
         try:
@@ -82,7 +80,6 @@ def main():
         page.evaluate("window.scrollTo({top: 500, behavior: 'smooth'})")
         page.wait_for_timeout(4000)
 
-        # 페이지 상태 출력
         content = page.content()
         print(f"HTML 길이: {len(content)}자")
 
@@ -110,22 +107,14 @@ def main():
         except Exception as e:
             print(f"버튼 탐색 오류: {e}")
 
-        # 버튼으로 못찾으면 HTML 전체에서 탐색
+        # 버튼으로 못찾으면 HTML 전체 탐색
         if found_text is None:
             print("버튼 탐색 실패 → HTML 전체 탐색")
-            if TARGET_TEXT in content:
-                # 숨겨진 버튼인지 확인
-                disabled_check = page.locator(f"button:has-text('{TARGET_TEXT}')").first
-                try:
-                    if disabled_check.count() > 0 and not disable_check.is_disabled():
-                        found_text = TARGET_TEXT
-                    else:
-                        print(f"  '{TARGET_TEXT}' HTML에 있지만 비활성/숨김 상태")
-                except Exception:
-                    pass
             if SOLDOUT_TEXT in content:
                 found_text = SOLDOUT_TEXT
                 print(f"  '{SOLDOUT_TEXT}' HTML에서 발견")
+            elif TARGET_TEXT in content:
+                print(f"  '{TARGET_TEXT}' HTML에서 발견 (비활성 가능성)")
 
         print(f"\n최종 판단: '{found_text}'")
 
