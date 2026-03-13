@@ -1,5 +1,6 @@
 """
-카르티에 재고 모니터 (GitHub Actions용) v2
+카르티에 재고 모니터 (GitHub Actions용) v3
+봇 차단 우회 + 텔레그램 알람
 """
 
 import os
@@ -21,7 +22,6 @@ SOLDOUT_TEXT = "상담원에 연결"
 
 
 def send_telegram(message: str):
-    """텔레그램 전송 + 결과 출력"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         r = requests.post(url, json={
@@ -29,20 +29,23 @@ def send_telegram(message: str):
             "text": message,
             "parse_mode": "HTML",
         }, timeout=10)
-        print(f"텔레그램 응답 코드: {r.status_code}")
-        print(f"텔레그램 응답 내용: {r.text}")
+        print(f"텔레그램 응답: {r.status_code} / {r.text[:100]}")
     except Exception as e:
         print(f"텔레그램 전송 오류: {e}")
 
 
 def main():
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{now}] 카르티에 재고 확인 시작")
+    print(f"[{now}] 카르티에 재고 확인 시작 v3")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+            ],
         )
         context = browser.new_context(
             user_agent=(
@@ -51,45 +54,71 @@ def main():
                 "Chrome/122.0.0.0 Safari/537.36"
             ),
             locale="ko-KR",
-            viewport={"width": 1280, "height": 800},
+            viewport={"width": 1440, "height": 900},
+            # 봇 감지 우회
+            extra_http_headers={
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"macOS"',
+            },
         )
+
+        # webdriver 속성 제거 (봇 감지 우회)
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['ko-KR', 'ko', 'en-US'] });
+        """)
+
         page = context.new_page()
 
-        print(f"페이지 로딩 중: {URL}")
-        page.goto(URL, timeout=40000)
-
-        # 페이지 완전 로딩 대기
+        print("페이지 로딩 중...")
         try:
-            page.wait_for_load_state("networkidle", timeout=20000)
+            page.goto(URL, timeout=40000, wait_until="domcontentloaded")
+        except Exception as e:
+            print(f"goto 오류: {e}")
+
+        # 사람처럼 대기
+        page.wait_for_timeout(8000)
+
+        # 스크롤 (JS 렌더링 유도)
+        page.evaluate("window.scrollTo(0, 300)")
+        page.wait_for_timeout(3000)
+
+        # 페이지 전체 텍스트 탐색
+        try:
+            page_text = page.inner_text("body")
         except Exception:
-            print("networkidle 타임아웃 — 계속 진행")
+            page_text = ""
 
-        # 추가 대기 (JS 렌더링)
-        page.wait_for_timeout(5000)
-
-        # 페이지 전체 텍스트에서 키워드 탐색
         content = page.content()
-        page_text = page.inner_text("body")
 
-        print("--- 페이지 텍스트 일부 (버튼 주변) ---")
-        # 관련 키워드 주변 텍스트 출력
-        for keyword in [TARGET_TEXT, SOLDOUT_TEXT, "Add to bag", "add-to-bag", "카트", "장바구니"]:
-            if keyword in content:
-                print(f"  HTML에서 발견: '{keyword}'")
-            if keyword in page_text:
-                print(f"  페이지텍스트에서 발견: '{keyword}'")
+        print(f"페이지 텍스트 길이: {len(page_text)}자")
+        print(f"HTML 길이: {len(content)}자")
 
-        # 버튼 요소 전체 탐색
-        print("--- 발견된 버튼 목록 ---")
-        buttons = page.locator("button").all()
-        print(f"  버튼 총 {len(buttons)}개 발견")
-        for i, btn in enumerate(buttons[:20]):  # 최대 20개
-            try:
-                txt = btn.inner_text().strip()
-                if txt:
-                    print(f"  버튼[{i}]: '{txt}'")
-            except Exception:
-                pass
+        # 버튼 탐색 및 출력
+        print("--- 버튼 목록 ---")
+        try:
+            buttons = page.locator("button").all()
+            print(f"버튼 총 {len(buttons)}개")
+            for i, btn in enumerate(buttons[:30]):
+                try:
+                    txt = btn.inner_text().strip()
+                    if txt:
+                        print(f"  버튼[{i}]: '{txt}'")
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"버튼 탐색 오류: {e}")
+
+        # 키워드 탐색
+        print("--- 키워드 탐색 ---")
+        for kw in [TARGET_TEXT, SOLDOUT_TEXT, "Add to bag", "Contact", "advisor"]:
+            in_html = kw in content
+            in_text = kw in page_text
+            print(f"  '{kw}' → HTML:{in_html} / 텍스트:{in_text}")
 
         # 결과 판단
         found_text = None
@@ -97,19 +126,6 @@ def main():
             found_text = TARGET_TEXT
         elif SOLDOUT_TEXT in content or SOLDOUT_TEXT in page_text:
             found_text = SOLDOUT_TEXT
-        else:
-            # 버튼에서 직접 탐색
-            for btn in buttons[:20]:
-                try:
-                    txt = btn.inner_text().strip()
-                    if TARGET_TEXT in txt:
-                        found_text = TARGET_TEXT
-                        break
-                    elif SOLDOUT_TEXT in txt:
-                        found_text = SOLDOUT_TEXT
-                        break
-                except Exception:
-                    pass
 
         print(f"\n최종 판단: '{found_text}'")
 
@@ -123,12 +139,19 @@ def main():
                 f"<i>{now}</i>"
             )
         elif found_text == SOLDOUT_TEXT:
-            print("품절 상태 확인됨 — 알람 없음")
+            print("품절 상태 확인됨 — 정상 모니터링 중")
+            # 정상 작동 확인용 (처음 한번만 보고싶으면 이 send_telegram 삭제 가능)
+            send_telegram(
+                "✅ <b>카르티에 모니터 정상 작동</b>\n"
+                "현재 상태: 품절 (상담원에 연결)\n"
+                "재고 생기면 즉시 알려드릴게요!\n"
+                f"<i>{now}</i>"
+            )
         else:
-            print("버튼을 찾지 못함 — 경고 전송")
+            print("버튼 찾지 못함 — 경고 전송")
             send_telegram(
                 "⚠️ <b>카르티에 모니터 경고</b>\n"
-                "버튼을 찾지 못했습니다. 사이트 구조 확인 필요.\n"
+                "버튼을 찾지 못했습니다. 사이트 차단 가능성 있음.\n"
                 f"<i>{now}</i>"
             )
 
