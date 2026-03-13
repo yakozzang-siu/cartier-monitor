@@ -1,6 +1,7 @@
 """
-카르티에 재고 모니터 (GitHub Actions용) v3
-봇 차단 우회 + 텔레그램 알람
+카르티에 재고 모니터 (GitHub Actions용) v4
+- 실제로 보이고 클릭 가능한 버튼만 감지
+- 오탐 방지
 """
 
 import os
@@ -29,14 +30,14 @@ def send_telegram(message: str):
             "text": message,
             "parse_mode": "HTML",
         }, timeout=10)
-        print(f"텔레그램 응답: {r.status_code} / {r.text[:100]}")
+        print(f"텔레그램 응답: {r.status_code}")
     except Exception as e:
         print(f"텔레그램 전송 오류: {e}")
 
 
 def main():
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{now}] 카르티에 재고 확인 시작 v3")
+    print(f"[{now}] 카르티에 재고 확인 시작 v4")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -55,7 +56,6 @@ def main():
             ),
             locale="ko-KR",
             viewport={"width": 1440, "height": 900},
-            # 봇 감지 우회
             extra_http_headers={
                 "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -64,8 +64,6 @@ def main():
                 "sec-ch-ua-platform": '"macOS"',
             },
         )
-
-        # webdriver 속성 제거 (봇 감지 우회)
         context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
@@ -80,57 +78,48 @@ def main():
         except Exception as e:
             print(f"goto 오류: {e}")
 
-        # 사람처럼 대기
         page.wait_for_timeout(8000)
-
-        # 스크롤 (JS 렌더링 유도)
-        page.evaluate("window.scrollTo(0, 300)")
+        page.evaluate("window.scrollTo(0, 400)")
         page.wait_for_timeout(3000)
 
-        # 페이지 전체 텍스트 탐색
-        try:
-            page_text = page.inner_text("body")
-        except Exception:
-            page_text = ""
+        # ─────────────────────────────────────────────────────
+        # 핵심: 버튼이 실제로 보이고(visible) 활성화(enabled) 상태인지 확인
+        # ─────────────────────────────────────────────────────
+        found_text = None
 
-        content = page.content()
-
-        print(f"페이지 텍스트 길이: {len(page_text)}자")
-        print(f"HTML 길이: {len(content)}자")
-
-        # 버튼 탐색 및 출력
-        print("--- 버튼 목록 ---")
+        print("--- 실제 보이는 버튼 탐색 ---")
         try:
             buttons = page.locator("button").all()
-            print(f"버튼 총 {len(buttons)}개")
+            print(f"전체 버튼 수: {len(buttons)}")
             for i, btn in enumerate(buttons[:30]):
                 try:
+                    # 보이는 버튼만 체크
+                    if not btn.is_visible():
+                        continue
                     txt = btn.inner_text().strip()
-                    if txt:
-                        print(f"  버튼[{i}]: '{txt}'")
+                    is_disabled = btn.is_disabled()
+                    print(f"  visible 버튼[{i}]: '{txt}' | disabled={is_disabled}")
+
+                    if TARGET_TEXT in txt and not is_disabled:
+                        found_text = TARGET_TEXT
+                        print(f"  → 구매 가능 버튼 감지!")
+                        break
+                    elif SOLDOUT_TEXT in txt:
+                        found_text = SOLDOUT_TEXT
+                        print(f"  → 품절 버튼 감지")
+                        break
                 except Exception:
                     pass
         except Exception as e:
             print(f"버튼 탐색 오류: {e}")
 
-        # 키워드 탐색
-        print("--- 키워드 탐색 ---")
-        for kw in [TARGET_TEXT, SOLDOUT_TEXT, "Add to bag", "Contact", "advisor"]:
-            in_html = kw in content
-            in_text = kw in page_text
-            print(f"  '{kw}' → HTML:{in_html} / 텍스트:{in_text}")
-
-        # 결과 판단
-        found_text = None
-        if TARGET_TEXT in content or TARGET_TEXT in page_text:
-            found_text = TARGET_TEXT
-        elif SOLDOUT_TEXT in content or SOLDOUT_TEXT in page_text:
-            found_text = SOLDOUT_TEXT
-
         print(f"\n최종 판단: '{found_text}'")
 
+        # ─────────────────────────────────────────────────────
+        # 결과에 따라 텔레그램 전송
+        # ─────────────────────────────────────────────────────
         if found_text == TARGET_TEXT:
-            print("재고 감지! 텔레그램 전송")
+            print("🎉 재고 감지! 텔레그램 전송")
             send_telegram(
                 "🛒 <b>카르티에 재고 알람!</b>\n\n"
                 "탱크 머스트 솔라비트™ (CRWSTA0089)\n"
@@ -139,14 +128,8 @@ def main():
                 f"<i>{now}</i>"
             )
         elif found_text == SOLDOUT_TEXT:
-            print("품절 상태 확인됨 — 정상 모니터링 중")
-            # 정상 작동 확인용 (처음 한번만 보고싶으면 이 send_telegram 삭제 가능)
-            send_telegram(
-                "✅ <b>카르티에 모니터 정상 작동</b>\n"
-                "현재 상태: 품절 (상담원에 연결)\n"
-                "재고 생기면 즉시 알려드릴게요!\n"
-                f"<i>{now}</i>"
-            )
+            # 품절 상태 — 텔레그램 안 보냄 (정상)
+            print("품절 상태 확인 — 알람 없음")
         else:
             print("버튼 찾지 못함 — 경고 전송")
             send_telegram(
