@@ -1,6 +1,6 @@
 """
-카르티에 재고 모니터 (GitHub Actions용) v7
-- 스크린샷 저장으로 페이지 상태 확인
+카르티에 재고 모니터 (GitHub Actions용) v8
+- 국가 선택 팝업 자동 닫기 추가
 """
 
 import os
@@ -43,7 +43,6 @@ def send_telegram(message: str):
 
 
 def send_telegram_photo(photo_path: str, caption: str):
-    """스크린샷을 텔레그램으로 전송"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     try:
         with open(photo_path, "rb") as f:
@@ -56,9 +55,52 @@ def send_telegram_photo(photo_path: str, caption: str):
         print(f"텔레그램 사진 전송 오류: {e}")
 
 
+def dismiss_popup(page) -> bool:
+    """국가 선택 팝업 닫기 — '현재 사이트로 계속하기' 클릭"""
+    popup_texts = [
+        "현재 사이트로 계속하기",
+        "현재 위치로 계속",
+        "계속하기",
+        "Stay on this site",
+        "Continue",
+    ]
+    for text in popup_texts:
+        try:
+            btn = page.get_by_text(text, exact=False).first
+            if btn.count() > 0 and btn.is_visible():
+                btn.click()
+                print(f"  팝업 닫음: '{text}' 클릭")
+                page.wait_for_timeout(3000)
+                return True
+        except Exception:
+            pass
+
+    # 버튼 전체에서 탐색
+    try:
+        buttons = page.locator("button").all()
+        for btn in buttons:
+            try:
+                if not btn.is_visible():
+                    continue
+                txt = btn.inner_text().strip()
+                for text in popup_texts:
+                    if text in txt:
+                        btn.click()
+                        print(f"  팝업 닫음 (버튼): '{txt}' 클릭")
+                        page.wait_for_timeout(3000)
+                        return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    print("  팝업 버튼 찾지 못함")
+    return False
+
+
 def main():
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{now}] 카르티에 재고 확인 시작 v7")
+    print(f"[{now}] 카르티에 재고 확인 시작 v8")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -96,17 +138,22 @@ def main():
         except Exception as e:
             print(f"goto 오류: {e}")
 
-        page.wait_for_timeout(7000)
-        page.mouse.move(600, 400)
-        page.wait_for_timeout(1000)
-        page.evaluate("window.scrollTo({top: 500, behavior: 'smooth'})")
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(6000)
 
-        # ★ 스크린샷 저장 후 텔레그램으로 전송
-        screenshot_path = "/tmp/cartier_screenshot.png"
-        page.screenshot(path=screenshot_path, full_page=False)
-        print(f"스크린샷 저장: {screenshot_path}")
-        send_telegram_photo(screenshot_path, f"카르티에 페이지 상태\n{now}")
+        # ★ 팝업 닫기
+        print("--- 팝업 처리 ---")
+        dismissed = dismiss_popup(page)
+
+        if dismissed:
+            # 팝업 닫은 후 페이지 안정화 대기
+            page.wait_for_timeout(4000)
+            page.evaluate("window.scrollTo({top: 500, behavior: 'smooth'})")
+            page.wait_for_timeout(3000)
+        else:
+            # 팝업 못닫은 경우 스크린샷 찍어서 확인
+            screenshot_path = "/tmp/cartier_popup.png"
+            page.screenshot(path=screenshot_path)
+            send_telegram_photo(screenshot_path, f"⚠️ 팝업 닫기 실패 — 스크린샷 확인\n{now}")
 
         content = page.content()
         print(f"HTML 길이: {len(content)}자")
@@ -146,6 +193,7 @@ def main():
         print(f"\n최종 판단: '{found_text}'")
 
         if found_text == TARGET_TEXT:
+            print("재고 감지! 텔레그램 전송")
             send_telegram(
                 "🛒 <b>카르티에 재고 알람!</b>\n\n"
                 "탱크 머스트 솔라비트™ (CRWSTA0089)\n"
@@ -154,12 +202,15 @@ def main():
                 f"<i>{now}</i>"
             )
         elif found_text == SOLDOUT_TEXT:
-            print("품절 상태 확인 — 알람 없음")
+            print("품절 상태 확인 — 알람 없음 (정상 모니터링 중)")
         else:
-            print("버튼 찾지 못함")
+            # 디버깅용 스크린샷
+            screenshot_path = "/tmp/cartier_screenshot.png"
+            page.screenshot(path=screenshot_path)
+            send_telegram_photo(screenshot_path, f"⚠️ 버튼 찾지 못함 — 스크린샷 확인\n{now}")
             send_telegram(
                 "⚠️ <b>카르티에 모니터 경고</b>\n"
-                "버튼을 찾지 못했습니다. 위 스크린샷 확인해주세요.\n"
+                "버튼을 찾지 못했습니다. 스크린샷 확인해주세요.\n"
                 f"<i>{now}</i>"
             )
 
