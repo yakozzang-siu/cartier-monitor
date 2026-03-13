@@ -1,0 +1,31 @@
+name: 카르티에 재고 모니터
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # 10분마다 실행 (GitHub Actions 최소 단위: 5분)
+  workflow_dispatch:          # 수동 실행 버튼도 활성화
+
+jobs:
+  check-stock:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 패키지 설치
+        run: |
+          pip install playwright requests
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: 재고 확인 실행
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python cartier_monitor.py
