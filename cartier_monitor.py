@@ -8,7 +8,7 @@ import os
 import requests
 from datetime import datetime
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
+from playwright_stealth import stealth
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
@@ -67,7 +67,7 @@ def main():
         page = context.new_page()
 
         # ★ stealth 적용 (Cloudflare 우회 핵심)
-        stealth_sync(page)
+        Stealth().apply_stealth_sync(page)
 
         print("페이지 로딩 중...")
         try:
