@@ -18,7 +18,7 @@ URL = (
 )
 
 TARGET_TEXT  = "백에 추가하기"
-SOLDOUT_TEXT = "상담원에 연결"
+SOLDOUT_TEXT = "상담원 연결"
 
 STEALTH_JS = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
