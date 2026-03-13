@@ -1,12 +1,13 @@
 """
-카르티에 재고 모니터 (GitHub Actions용) v5
+카르티에 재고 모니터 (GitHub Actions용) v6
+- playwright_stealth 제거
+- 수동 봇 우회
 """
 
 import os
 import requests
 from datetime import datetime
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
@@ -19,6 +20,18 @@ URL = (
 
 TARGET_TEXT  = "백에 추가하기"
 SOLDOUT_TEXT = "상담원에 연결"
+
+# 봇 감지 우회 스크립트
+STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});
+Object.defineProperty(navigator, 'platform', {get: () => 'MacIntel'});
+window.chrome = {runtime: {}};
+Object.defineProperty(navigator, 'permissions', {
+    get: () => ({query: () => Promise.resolve({state: 'granted'})})
+});
+"""
 
 
 def send_telegram(message: str):
@@ -36,7 +49,7 @@ def send_telegram(message: str):
 
 def main():
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{now}] 카르티에 재고 확인 시작 v5")
+    print(f"[{now}] 카르티에 재고 확인 시작 v6")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -45,6 +58,7 @@ def main():
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
                 "--window-size=1440,900",
             ],
         )
@@ -59,13 +73,16 @@ def main():
             extra_http_headers={
                 "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"macOS"',
             },
         )
 
-        page = context.new_page()
+        # 봇 감지 우회 JS 주입
+        context.add_init_script(STEALTH_JS)
 
-        # ★ stealth 적용 (Cloudflare 우회 핵심)
-        stealth(page)
+        page = context.new_page()
 
         print("페이지 로딩 중...")
         try:
@@ -74,7 +91,7 @@ def main():
             print(f"goto 오류: {e}")
 
         # 사람처럼 행동
-        page.wait_for_timeout(6000)
+        page.wait_for_timeout(7000)
         page.mouse.move(600, 400)
         page.wait_for_timeout(1000)
         page.evaluate("window.scrollTo({top: 500, behavior: 'smooth'})")
@@ -107,14 +124,14 @@ def main():
         except Exception as e:
             print(f"버튼 탐색 오류: {e}")
 
-        # 버튼으로 못찾으면 HTML 전체 탐색
+        # HTML 전체 탐색 (백업)
         if found_text is None:
             print("버튼 탐색 실패 → HTML 전체 탐색")
             if SOLDOUT_TEXT in content:
                 found_text = SOLDOUT_TEXT
                 print(f"  '{SOLDOUT_TEXT}' HTML에서 발견")
             elif TARGET_TEXT in content:
-                print(f"  '{TARGET_TEXT}' HTML에서 발견 (비활성 가능성)")
+                print(f"  '{TARGET_TEXT}' HTML에서 발견")
 
         print(f"\n최종 판단: '{found_text}'")
 
