@@ -2,8 +2,8 @@ name: 카르티에 재고 모니터
 
 on:
   schedule:
-    - cron: '*/10 * * * *'   # 10분마다 실행 (GitHub Actions 최소 단위: 5분)
-  workflow_dispatch:          # 수동 실행 버튼도 활성화
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
 
 jobs:
   check-stock:
@@ -20,7 +20,7 @@ jobs:
 
       - name: 패키지 설치
         run: |
-          pip install playwright requests
+          pip install playwright requests playwright-stealth
           playwright install chromium
           playwright install-deps chromium
 
