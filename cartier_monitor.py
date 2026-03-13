@@ -1,13 +1,14 @@
 """
-카르티에 재고 모니터 (GitHub Actions용) v4
-- 실제로 보이고 클릭 가능한 버튼만 감지
-- 오탐 방지
+카르티에 재고 모니터 (GitHub Actions용) v5
+- playwright-stealth 으로 Cloudflare 우회
+- 실제 보이고 활성화된 버튼만 감지
 """
 
 import os
 import requests
 from datetime import datetime
 from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
@@ -37,7 +38,7 @@ def send_telegram(message: str):
 
 def main():
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{now}] 카르티에 재고 확인 시작 v4")
+    print(f"[{now}] 카르티에 재고 확인 시작 v5")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -46,6 +47,7 @@ def main():
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
+                "--window-size=1440,900",
             ],
         )
         context = browser.new_context(
@@ -57,69 +59,78 @@ def main():
             locale="ko-KR",
             viewport={"width": 1440, "height": 900},
             extra_http_headers={
-                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": '"macOS"',
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             },
         )
-        context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['ko-KR', 'ko', 'en-US'] });
-        """)
 
         page = context.new_page()
 
+        # ★ stealth 적용 (Cloudflare 우회 핵심)
+        stealth_sync(page)
+
         print("페이지 로딩 중...")
         try:
-            page.goto(URL, timeout=40000, wait_until="domcontentloaded")
+            page.goto(URL, timeout=45000, wait_until="domcontentloaded")
         except Exception as e:
             print(f"goto 오류: {e}")
 
-        page.wait_for_timeout(8000)
-        page.evaluate("window.scrollTo(0, 400)")
-        page.wait_for_timeout(3000)
+        # 사람처럼 행동
+        page.wait_for_timeout(6000)
+        page.mouse.move(600, 400)
+        page.wait_for_timeout(1000)
+        page.evaluate("window.scrollTo({top: 500, behavior: 'smooth'})")
+        page.wait_for_timeout(4000)
 
-        # ─────────────────────────────────────────────────────
-        # 핵심: 버튼이 실제로 보이고(visible) 활성화(enabled) 상태인지 확인
-        # ─────────────────────────────────────────────────────
+        # 페이지 상태 출력
+        content = page.content()
+        print(f"HTML 길이: {len(content)}자")
+
+        # 버튼 탐색
         found_text = None
-
-        print("--- 실제 보이는 버튼 탐색 ---")
+        print("--- 보이는 버튼 탐색 ---")
         try:
             buttons = page.locator("button").all()
             print(f"전체 버튼 수: {len(buttons)}")
             for i, btn in enumerate(buttons[:30]):
                 try:
-                    # 보이는 버튼만 체크
                     if not btn.is_visible():
                         continue
                     txt = btn.inner_text().strip()
                     is_disabled = btn.is_disabled()
                     print(f"  visible 버튼[{i}]: '{txt}' | disabled={is_disabled}")
-
                     if TARGET_TEXT in txt and not is_disabled:
                         found_text = TARGET_TEXT
-                        print(f"  → 구매 가능 버튼 감지!")
                         break
                     elif SOLDOUT_TEXT in txt:
                         found_text = SOLDOUT_TEXT
-                        print(f"  → 품절 버튼 감지")
                         break
                 except Exception:
                     pass
         except Exception as e:
             print(f"버튼 탐색 오류: {e}")
 
+        # 버튼으로 못찾으면 HTML 전체에서 탐색
+        if found_text is None:
+            print("버튼 탐색 실패 → HTML 전체 탐색")
+            if TARGET_TEXT in content:
+                # 숨겨진 버튼인지 확인
+                disabled_check = page.locator(f"button:has-text('{TARGET_TEXT}')").first
+                try:
+                    if disabled_check.count() > 0 and not disable_check.is_disabled():
+                        found_text = TARGET_TEXT
+                    else:
+                        print(f"  '{TARGET_TEXT}' HTML에 있지만 비활성/숨김 상태")
+                except Exception:
+                    pass
+            if SOLDOUT_TEXT in content:
+                found_text = SOLDOUT_TEXT
+                print(f"  '{SOLDOUT_TEXT}' HTML에서 발견")
+
         print(f"\n최종 판단: '{found_text}'")
 
-        # ─────────────────────────────────────────────────────
-        # 결과에 따라 텔레그램 전송
-        # ─────────────────────────────────────────────────────
         if found_text == TARGET_TEXT:
-            print("🎉 재고 감지! 텔레그램 전송")
+            print("재고 감지! 텔레그램 전송")
             send_telegram(
                 "🛒 <b>카르티에 재고 알람!</b>\n\n"
                 "탱크 머스트 솔라비트™ (CRWSTA0089)\n"
@@ -128,8 +139,7 @@ def main():
                 f"<i>{now}</i>"
             )
         elif found_text == SOLDOUT_TEXT:
-            # 품절 상태 — 텔레그램 안 보냄 (정상)
-            print("품절 상태 확인 — 알람 없음")
+            print("품절 상태 확인 — 알람 없음 (정상 모니터링 중)")
         else:
             print("버튼 찾지 못함 — 경고 전송")
             send_telegram(
