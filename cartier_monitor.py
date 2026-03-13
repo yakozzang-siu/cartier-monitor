@@ -1,7 +1,6 @@
 """
-카르티에 재고 모니터 (GitHub Actions용) v6
-- playwright_stealth 제거
-- 수동 봇 우회
+카르티에 재고 모니터 (GitHub Actions용) v7
+- 스크린샷 저장으로 페이지 상태 확인
 """
 
 import os
@@ -21,16 +20,12 @@ URL = (
 TARGET_TEXT  = "백에 추가하기"
 SOLDOUT_TEXT = "상담원에 연결"
 
-# 봇 감지 우회 스크립트
 STEALTH_JS = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
 Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});
 Object.defineProperty(navigator, 'platform', {get: () => 'MacIntel'});
 window.chrome = {runtime: {}};
-Object.defineProperty(navigator, 'permissions', {
-    get: () => ({query: () => Promise.resolve({state: 'granted'})})
-});
 """
 
 
@@ -47,9 +42,23 @@ def send_telegram(message: str):
         print(f"텔레그램 전송 오류: {e}")
 
 
+def send_telegram_photo(photo_path: str, caption: str):
+    """스크린샷을 텔레그램으로 전송"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    try:
+        with open(photo_path, "rb") as f:
+            r = requests.post(url, data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "caption": caption,
+            }, files={"photo": f}, timeout=20)
+        print(f"텔레그램 사진 응답: {r.status_code}")
+    except Exception as e:
+        print(f"텔레그램 사진 전송 오류: {e}")
+
+
 def main():
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{now}] 카르티에 재고 확인 시작 v6")
+    print(f"[{now}] 카르티에 재고 확인 시작 v7")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -58,7 +67,6 @@ def main():
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
-                "--disable-infobars",
                 "--window-size=1440,900",
             ],
         )
@@ -78,8 +86,6 @@ def main():
                 "sec-ch-ua-platform": '"macOS"',
             },
         )
-
-        # 봇 감지 우회 JS 주입
         context.add_init_script(STEALTH_JS)
 
         page = context.new_page()
@@ -90,12 +96,17 @@ def main():
         except Exception as e:
             print(f"goto 오류: {e}")
 
-        # 사람처럼 행동
         page.wait_for_timeout(7000)
         page.mouse.move(600, 400)
         page.wait_for_timeout(1000)
         page.evaluate("window.scrollTo({top: 500, behavior: 'smooth'})")
         page.wait_for_timeout(4000)
+
+        # ★ 스크린샷 저장 후 텔레그램으로 전송
+        screenshot_path = "/tmp/cartier_screenshot.png"
+        page.screenshot(path=screenshot_path, full_page=False)
+        print(f"스크린샷 저장: {screenshot_path}")
+        send_telegram_photo(screenshot_path, f"카르티에 페이지 상태\n{now}")
 
         content = page.content()
         print(f"HTML 길이: {len(content)}자")
@@ -124,7 +135,6 @@ def main():
         except Exception as e:
             print(f"버튼 탐색 오류: {e}")
 
-        # HTML 전체 탐색 (백업)
         if found_text is None:
             print("버튼 탐색 실패 → HTML 전체 탐색")
             if SOLDOUT_TEXT in content:
@@ -136,7 +146,6 @@ def main():
         print(f"\n최종 판단: '{found_text}'")
 
         if found_text == TARGET_TEXT:
-            print("재고 감지! 텔레그램 전송")
             send_telegram(
                 "🛒 <b>카르티에 재고 알람!</b>\n\n"
                 "탱크 머스트 솔라비트™ (CRWSTA0089)\n"
@@ -145,12 +154,12 @@ def main():
                 f"<i>{now}</i>"
             )
         elif found_text == SOLDOUT_TEXT:
-            print("품절 상태 확인 — 알람 없음 (정상 모니터링 중)")
+            print("품절 상태 확인 — 알람 없음")
         else:
-            print("버튼 찾지 못함 — 경고 전송")
+            print("버튼 찾지 못함")
             send_telegram(
                 "⚠️ <b>카르티에 모니터 경고</b>\n"
-                "버튼을 찾지 못했습니다. 사이트 차단 가능성 있음.\n"
+                "버튼을 찾지 못했습니다. 위 스크린샷 확인해주세요.\n"
                 f"<i>{now}</i>"
             )
 
