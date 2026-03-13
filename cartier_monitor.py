@@ -1,6 +1,6 @@
 """
-카르티에 재고 모니터 (GitHub Actions용) v8
-- 국가 선택 팝업 자동 닫기 추가
+카르티에 재고 모니터 (GitHub Actions용) v10
+- 여러 제품 동시 모니터링
 """
 
 import os
@@ -11,11 +11,25 @@ from playwright.sync_api import sync_playwright
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
 
-URL = (
-    "https://www.cartier.com/ko-kr/watches/all-collections/tank/"
-    "%ED%83%B1%ED%81%AC-%EB%A8%B8%EC%8A%A4%ED%8A%B8-%EC%86%94%EB%9D%BC%EB%B9%84%ED%8A%B8%E2%84%A2-"
-    "%EC%9B%8C%EC%B9%98-CRWSTA0089.html"
-)
+# ★ 모니터링할 제품 목록 — 추가하고 싶으면 여기에 계속 추가
+PRODUCTS = [
+    {
+        "name": "탱크 머스트 솔라비트™ (CRWSTA0089)",
+        "url": (
+            "https://www.cartier.com/ko-kr/watches/all-collections/tank/"
+            "%ED%83%B1%ED%81%AC-%EB%A8%B8%EC%8A%A4%ED%8A%B8-%EC%86%94%EB%9D%BC%EB%B9%84%ED%8A%B8%E2%84%A2-"
+            "%EC%9B%8C%EC%B9%98-CRWSTA0089.html"
+        ),
+    },
+    {
+        "name": "탱크 머스트 드 까르띠에 (CRWSTA0135)",
+        "url": (
+            "https://www.cartier.com/ko-kr/watches/all-collections/tank/"
+            "%ED%83%B1%ED%81%AC-%EB%A8%B8%EC%8A%A4%ED%8A%B8-%EB%93%9C-%EA%B9%8C%EB%A5%B4%EB%9D%A0%EC%97%90-"
+            "%EC%9B%8C%EC%B9%98-CRWSTA0135.html"
+        ),
+    },
+]
 
 TARGET_TEXT  = "백에 추가하기"
 SOLDOUT_TEXT = "상담원 연결"
@@ -42,21 +56,8 @@ def send_telegram(message: str):
         print(f"텔레그램 전송 오류: {e}")
 
 
-def send_telegram_photo(photo_path: str, caption: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    try:
-        with open(photo_path, "rb") as f:
-            r = requests.post(url, data={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "caption": caption,
-            }, files={"photo": f}, timeout=20)
-        print(f"텔레그램 사진 응답: {r.status_code}")
-    except Exception as e:
-        print(f"텔레그램 사진 전송 오류: {e}")
-
-
 def dismiss_popup(page) -> bool:
-    """국가 선택 팝업 닫기 — '현재 사이트로 계속하기' 클릭"""
+    """국가 선택 팝업 닫기"""
     popup_texts = [
         "현재 사이트로 계속하기",
         "현재 위치로 계속",
@@ -75,7 +76,6 @@ def dismiss_popup(page) -> bool:
         except Exception:
             pass
 
-    # 버튼 전체에서 탐색
     try:
         buttons = page.locator("button").all()
         for btn in buttons:
@@ -94,13 +94,70 @@ def dismiss_popup(page) -> bool:
     except Exception:
         pass
 
-    print("  팝업 버튼 찾지 못함")
     return False
+
+
+def check_product(page, product: dict) -> str | None:
+    """제품 페이지 확인 — 버튼 텍스트 반환"""
+    print(f"\n{'='*50}")
+    print(f"확인 중: {product['name']}")
+    print(f"URL: {product['url']}")
+
+    try:
+        page.goto(product["url"], timeout=45000, wait_until="domcontentloaded")
+    except Exception as e:
+        print(f"goto 오류: {e}")
+        return None
+
+    page.wait_for_timeout(6000)
+
+    # 팝업 처리
+    dismiss_popup(page)
+    page.wait_for_timeout(3000)
+    page.evaluate("window.scrollTo({top: 500, behavior: 'smooth'})")
+    page.wait_for_timeout(3000)
+
+    content = page.content()
+    found_text = None
+
+    # 버튼 탐색
+    try:
+        buttons = page.locator("button").all()
+        print(f"전체 버튼 수: {len(buttons)}")
+        for i, btn in enumerate(buttons[:30]):
+            try:
+                if not btn.is_visible():
+                    continue
+                txt = btn.inner_text().strip()
+                is_disabled = btn.is_disabled()
+                print(f"  버튼[{i}]: '{txt}' | disabled={is_disabled}")
+                if TARGET_TEXT in txt and not is_disabled:
+                    found_text = TARGET_TEXT
+                    break
+                elif SOLDOUT_TEXT in txt:
+                    found_text = SOLDOUT_TEXT
+                    break
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"버튼 탐색 오류: {e}")
+
+    # HTML 전체 탐색 (백업)
+    if found_text is None:
+        if SOLDOUT_TEXT in content:
+            found_text = SOLDOUT_TEXT
+            print(f"  HTML에서 '{SOLDOUT_TEXT}' 발견")
+        elif TARGET_TEXT in content:
+            found_text = TARGET_TEXT
+            print(f"  HTML에서 '{TARGET_TEXT}' 발견")
+
+    print(f"최종 판단: '{found_text}'")
+    return found_text
 
 
 def main():
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{now}] 카르티에 재고 확인 시작 v8")
+    print(f"[{now}] 카르티에 재고 확인 시작 v10 — {len(PRODUCTS)}개 제품")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -129,90 +186,30 @@ def main():
             },
         )
         context.add_init_script(STEALTH_JS)
-
         page = context.new_page()
 
-        print("페이지 로딩 중...")
-        try:
-            page.goto(URL, timeout=45000, wait_until="domcontentloaded")
-        except Exception as e:
-            print(f"goto 오류: {e}")
+        for product in PRODUCTS:
+            result = check_product(page, product)
 
-        page.wait_for_timeout(6000)
-
-        # ★ 팝업 닫기
-        print("--- 팝업 처리 ---")
-        dismissed = dismiss_popup(page)
-
-        if dismissed:
-            # 팝업 닫은 후 페이지 안정화 대기
-            page.wait_for_timeout(4000)
-            page.evaluate("window.scrollTo({top: 500, behavior: 'smooth'})")
-            page.wait_for_timeout(3000)
-        else:
-            # 팝업 못닫은 경우 스크린샷 찍어서 확인
-            screenshot_path = "/tmp/cartier_popup.png"
-            page.screenshot(path=screenshot_path)
-            send_telegram_photo(screenshot_path, f"⚠️ 팝업 닫기 실패 — 스크린샷 확인\n{now}")
-
-        content = page.content()
-        print(f"HTML 길이: {len(content)}자")
-
-        # 버튼 탐색
-        found_text = None
-        print("--- 보이는 버튼 탐색 ---")
-        try:
-            buttons = page.locator("button").all()
-            print(f"전체 버튼 수: {len(buttons)}")
-            for i, btn in enumerate(buttons[:30]):
-                try:
-                    if not btn.is_visible():
-                        continue
-                    txt = btn.inner_text().strip()
-                    is_disabled = btn.is_disabled()
-                    print(f"  visible 버튼[{i}]: '{txt}' | disabled={is_disabled}")
-                    if TARGET_TEXT in txt and not is_disabled:
-                        found_text = TARGET_TEXT
-                        break
-                    elif SOLDOUT_TEXT in txt:
-                        found_text = SOLDOUT_TEXT
-                        break
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"버튼 탐색 오류: {e}")
-
-        if found_text is None:
-            print("버튼 탐색 실패 → HTML 전체 탐색")
-            if SOLDOUT_TEXT in content:
-                found_text = SOLDOUT_TEXT
-                print(f"  '{SOLDOUT_TEXT}' HTML에서 발견")
-            elif TARGET_TEXT in content:
-                print(f"  '{TARGET_TEXT}' HTML에서 발견")
-
-        print(f"\n최종 판단: '{found_text}'")
-
-        if found_text == TARGET_TEXT:
-            print("재고 감지! 텔레그램 전송")
-            send_telegram(
-                "🛒 <b>카르티에 재고 알람!</b>\n\n"
-                "탱크 머스트 솔라비트™ (CRWSTA0089)\n"
-                "✅ <b>지금 구매 가능합니다!</b>\n\n"
-                f"🔗 {URL}\n\n"
-                f"<i>{now}</i>"
-            )
-        elif found_text == SOLDOUT_TEXT:
-            print("품절 상태 확인 — 알람 없음 (정상 모니터링 중)")
-        else:
-            # 디버깅용 스크린샷
-            screenshot_path = "/tmp/cartier_screenshot.png"
-            page.screenshot(path=screenshot_path)
-            send_telegram_photo(screenshot_path, f"⚠️ 버튼 찾지 못함 — 스크린샷 확인\n{now}")
-            send_telegram(
-                "⚠️ <b>카르티에 모니터 경고</b>\n"
-                "버튼을 찾지 못했습니다. 스크린샷 확인해주세요.\n"
-                f"<i>{now}</i>"
-            )
+            if result == TARGET_TEXT:
+                print(f"재고 감지! → {product['name']}")
+                send_telegram(
+                    "🛒 <b>카르티에 재고 알람!</b>\n\n"
+                    f"<b>{product['name']}</b>\n"
+                    "✅ <b>지금 구매 가능합니다!</b>\n\n"
+                    f"🔗 {product['url']}\n\n"
+                    f"<i>{now}</i>"
+                )
+            elif result == SOLDOUT_TEXT:
+                print(f"품절 상태 — 알람 없음")
+            else:
+                print(f"버튼 찾지 못함 — 경고")
+                send_telegram(
+                    f"⚠️ <b>카르티에 모니터 경고</b>\n"
+                    f"버튼을 찾지 못했습니다.\n"
+                    f"제품: {product['name']}\n"
+                    f"<i>{now}</i>"
+                )
 
         browser.close()
 
