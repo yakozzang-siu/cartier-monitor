@@ -1,6 +1,5 @@
 """
-카르티에 재고 모니터 (GitHub Actions용)
-"상담원에 연결" → "백에 추가하기" 감지 시 텔레그램 알람
+카르티에 재고 모니터 (GitHub Actions용) v2
 """
 
 import os
@@ -8,7 +7,6 @@ import requests
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
-# GitHub Secrets에서 환경변수로 읽어옴
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
 
@@ -23,48 +21,23 @@ SOLDOUT_TEXT = "상담원에 연결"
 
 
 def send_telegram(message: str):
+    """텔레그램 전송 + 결과 출력"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(url, json={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-    }, timeout=10)
-
-
-def get_button_text(page) -> str | None:
     try:
-        page.wait_for_load_state("networkidle", timeout=25000)
-
-        selectors = [
-            f"button:has-text('{TARGET_TEXT}')",
-            f"button:has-text('{SOLDOUT_TEXT}')",
-            "button[class*='cta']",
-            "button[class*='add']",
-        ]
-        for sel in selectors:
-            try:
-                el = page.locator(sel).first
-                if el.count() > 0:
-                    text = el.inner_text().strip()
-                    if text:
-                        return text
-            except Exception:
-                continue
-
-        content = page.content()
-        if TARGET_TEXT in content:
-            return TARGET_TEXT
-        if SOLDOUT_TEXT in content:
-            return SOLDOUT_TEXT
-
-        return None
+        r = requests.post(url, json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML",
+        }, timeout=10)
+        print(f"텔레그램 응답 코드: {r.status_code}")
+        print(f"텔레그램 응답 내용: {r.text}")
     except Exception as e:
-        print(f"오류: {e}")
-        return None
+        print(f"텔레그램 전송 오류: {e}")
 
 
 def main():
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 카르티에 재고 확인 시작")
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{now}] 카르티에 재고 확인 시작")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -78,31 +51,86 @@ def main():
                 "Chrome/122.0.0.0 Safari/537.36"
             ),
             locale="ko-KR",
+            viewport={"width": 1280, "height": 800},
         )
         page = context.new_page()
-        page.goto(URL, timeout=30000)
 
-        btn_text = get_button_text(page)
-        print(f"버튼 텍스트: '{btn_text}'")
+        print(f"페이지 로딩 중: {URL}")
+        page.goto(URL, timeout=40000)
 
-        if btn_text and TARGET_TEXT in btn_text:
+        # 페이지 완전 로딩 대기
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            print("networkidle 타임아웃 — 계속 진행")
+
+        # 추가 대기 (JS 렌더링)
+        page.wait_for_timeout(5000)
+
+        # 페이지 전체 텍스트에서 키워드 탐색
+        content = page.content()
+        page_text = page.inner_text("body")
+
+        print("--- 페이지 텍스트 일부 (버튼 주변) ---")
+        # 관련 키워드 주변 텍스트 출력
+        for keyword in [TARGET_TEXT, SOLDOUT_TEXT, "Add to bag", "add-to-bag", "카트", "장바구니"]:
+            if keyword in content:
+                print(f"  HTML에서 발견: '{keyword}'")
+            if keyword in page_text:
+                print(f"  페이지텍스트에서 발견: '{keyword}'")
+
+        # 버튼 요소 전체 탐색
+        print("--- 발견된 버튼 목록 ---")
+        buttons = page.locator("button").all()
+        print(f"  버튼 총 {len(buttons)}개 발견")
+        for i, btn in enumerate(buttons[:20]):  # 최대 20개
+            try:
+                txt = btn.inner_text().strip()
+                if txt:
+                    print(f"  버튼[{i}]: '{txt}'")
+            except Exception:
+                pass
+
+        # 결과 판단
+        found_text = None
+        if TARGET_TEXT in content or TARGET_TEXT in page_text:
+            found_text = TARGET_TEXT
+        elif SOLDOUT_TEXT in content or SOLDOUT_TEXT in page_text:
+            found_text = SOLDOUT_TEXT
+        else:
+            # 버튼에서 직접 탐색
+            for btn in buttons[:20]:
+                try:
+                    txt = btn.inner_text().strip()
+                    if TARGET_TEXT in txt:
+                        found_text = TARGET_TEXT
+                        break
+                    elif SOLDOUT_TEXT in txt:
+                        found_text = SOLDOUT_TEXT
+                        break
+                except Exception:
+                    pass
+
+        print(f"\n최종 판단: '{found_text}'")
+
+        if found_text == TARGET_TEXT:
             print("재고 감지! 텔레그램 전송")
             send_telegram(
                 "🛒 <b>카르티에 재고 알람!</b>\n\n"
                 "탱크 머스트 솔라비트™ (CRWSTA0089)\n"
                 "✅ <b>지금 구매 가능합니다!</b>\n\n"
                 f"🔗 {URL}\n\n"
-                f"<i>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>"
+                f"<i>{now}</i>"
             )
-        elif btn_text is None:
-            print("버튼을 찾지 못했습니다.")
+        elif found_text == SOLDOUT_TEXT:
+            print("품절 상태 확인됨 — 알람 없음")
+        else:
+            print("버튼을 찾지 못함 — 경고 전송")
             send_telegram(
                 "⚠️ <b>카르티에 모니터 경고</b>\n"
-                "버튼을 찾지 못했습니다. 사이트 구조가 바뀌었을 수 있어요.\n"
-                f"<i>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>"
+                "버튼을 찾지 못했습니다. 사이트 구조 확인 필요.\n"
+                f"<i>{now}</i>"
             )
-        else:
-            print(f"품절 상태 유지 중: '{btn_text}'")
 
         browser.close()
 
